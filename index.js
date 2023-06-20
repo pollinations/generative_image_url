@@ -20,6 +20,10 @@ import { translateIfNecessary } from './translateIfNecessary.js';
 import { sendToAnalytics } from './sendToAnalytics.js';
 import { isMature } from "./lib/mature.js"
 
+
+
+
+
 const activeQueues = {};
 
 
@@ -77,12 +81,18 @@ const requestListener = async function (req, res) {
 
   // console.log("queue size", imageGenerationQueue.size)
   await (activeQueues[ip].add(async () => {
-    const bufferWithLegend = await createAndReturnImageCached(promptRaw, extraParams, res, activeQueues[ip].size, concurrentRequests);
-  
-    // console.log(bufferWithLegend)
-    res.write(bufferWithLegend);
-    res.end();
-    sendToAnalytics(req, "imageGenerated", {promptRaw, concurrentRequests});
+    try {
+      const bufferWithLegend = await createAndReturnImageCached(promptRaw, extraParams, res, activeQueues[ip].size, concurrentRequests);
+    
+      // console.log(bufferWithLegend)
+      res.write(bufferWithLegend);
+      res.end();
+      sendToAnalytics(req, "imageGenerated", {promptRaw, concurrentRequests});
+    } catch (e) {
+      console.error(e);
+      res.writeHead(500);
+      res.end('500: Internal Server Error');
+    }
   }));
 }
 
@@ -98,16 +108,21 @@ const callWebUI = async (prompt, extraParams={}) => {
   // if the queue is greater than 10 use only 10 steps 
   // if the queue is zero use 50 steps
   // smooth between 5 and 50 steps based on the queue size
-  const steps = isMature(prompt) ? 4 : Math.min(50, Math.max(15, 50 - concurrentRequests * 10));
+  const steps = isMature(prompt) ? 10 : Math.min(50, Math.max(15, 50 - concurrentRequests * 10));
+  
   console.log("concurent requests", concurrentRequests, "steps", steps, "prompt", prompt, "extraParams", extraParams);
+  
+  const appendToPrompt = isMature(prompt) ? ". (hairy gorilla:1.2)" : "";
+  
   concurrentRequests++;
   
   const safeParams = makeParamsSafe(extraParams);
 
+  
   sendToFeedListeners({concurrentRequests});
   
     const body = {
-        "prompt": prompt + " <lora:noiseoffset:0.6>  <lora:flat_color:0.2>  <lora:add_detail:0.4> ",//+" | key visual| intricate| highly detailed| precise lineart| vibrant| comprehensive cinematic",
+        "prompt": prompt + " <lora:noiseoffset:0.6>  <lora:flat_color:0.2>  <lora:add_detail:0.4> "+ appendToPrompt,//+" | key visual| intricate| highly detailed| precise lineart| vibrant| comprehensive cinematic",
         "steps": steps,
         "height": 384,
         "sampler_index": "Euler a",//"DPM++ SDE Karras",
@@ -164,7 +179,7 @@ async function createAndReturnImage(promptRaw, extraParams, res, ipQueueSize, co
 
   const promptAnyLanguage = urldecode(promptRaw);
   
-  const prompt = promptAnyLanguage; // await translateIfNecessary(promptAnyLanguage);
+  const prompt = await translateIfNecessary(promptAnyLanguage);
 
   const buffer = await callWebUI(prompt, extraParams);
 
