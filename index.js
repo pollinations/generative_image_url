@@ -31,7 +31,6 @@ const activeQueues = {};
 
 const requestListener = async function (req, res) {
 
-
   let { pathname, query } = parse(req.url, true);
     // get query params
     const extraParams = {...query};
@@ -82,7 +81,7 @@ const requestListener = async function (req, res) {
   // console.log("queue size", imageGenerationQueue.size)
   await (activeQueues[ip].add(async () => {
     try {
-      const bufferWithLegend = await createAndReturnImageCached(promptRaw, extraParams, res, activeQueues[ip].size, concurrentRequests);
+      const bufferWithLegend = await createAndReturnImageCached(promptRaw, extraParams, res, req, activeQueues[ip].size, concurrentRequests);
     
       // console.log(bufferWithLegend)
       res.write(bufferWithLegend);
@@ -112,7 +111,8 @@ const callWebUI = async (prompt, extraParams={}) => {
   
   console.log("concurent requests", concurrentRequests, "steps", steps, "prompt", prompt, "extraParams", extraParams);
   
-  const appendToPrompt = isMature(prompt) ? ". (hairy gorilla:1.2)" : "";
+  const animal = prompt.toLowerCase().includes("black") ? "panda:1.3" : "gorilla:1.45";
+  const appendToPrompt = isMature(prompt) ? `. (${animal})` : "";
   
   concurrentRequests++;
   
@@ -168,7 +168,7 @@ const makeParamsSafe = ({width=512, height=384, seed}) => {
   return {width, height, seed};
 }
 
-async function createAndReturnImage(promptRaw, extraParams, res, ipQueueSize, concurrentRequests) {
+async function createAndReturnImage(promptRaw, extraParams, res, req, ipQueueSize, concurrentRequests) {
 
   if (ipQueueSize > 0) {
     console.log("sleeping 3000ms because there was an image in the queue before");
@@ -185,7 +185,8 @@ async function createAndReturnImage(promptRaw, extraParams, res, ipQueueSize, co
 
   const bufferWithLegend = await addPollinationsLogoWithImagemagick(buffer);
 
-  const imageURL = `https://image.pollinations.ai/prompt/${promptRaw}`;
+  // get current url from request
+  const imageURL = `https://image.pollinations.ai${req.url}`; 
   sendToFeedListeners({concurrentRequests, imageURL, prompt, originalPrompt: promptAnyLanguage}, {saveAsLastState: true});
   
   return bufferWithLegend;

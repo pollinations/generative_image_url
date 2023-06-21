@@ -1,6 +1,6 @@
 
 import {v2 } from '@google-cloud/translate';
-import cld from "cld";
+import { detect, detectAll } from 'tinyld';
 
 const Translate = v2.Translate;
 
@@ -9,19 +9,15 @@ const translate = new Translate({projectId: "exalted-breaker-348215"});
 
 export async function translateIfNecessary(promptAnyLanguage) {
   try {
-    let isEnglish = false;
-    try {
-      isEnglish = await testEnglish(promptAnyLanguage);
-    } catch (e) {
-      console.log(`error testing english "${e.message}" but no problem. Just translating`);
-    }
+    const detectedLanguage = detectAll(promptAnyLanguage);
+    const isEnglish = detectedLanguage === "en";
     // const prompt = isEnglish ? promptAnyLanguage : (await translate(promptAnyLanguage, { to: "en" }))?.text;
     
-    const [prompt] = await translate.translate(promptAnyLanguage, "en");
+    const prompt = isEnglish ? promptAnyLanguage : (await translate.translate(promptAnyLanguage, "en"))[0];
  
-    // if (!isEnglish) {
-      console.log("translated prompt to english ",promptAnyLanguage, "---", prompt);
-    // }
+    if (!isEnglish) {
+      console.log("translated prompt to english ",promptAnyLanguage, "---", prompt, "detected language", detectedLanguage);
+    }
 
     return prompt;
   } catch (e) {
@@ -29,13 +25,5 @@ export async function translateIfNecessary(promptAnyLanguage) {
     return promptAnyLanguage;
   }
 }
-// In an async function
 
-async function testEnglish(text) {
-  const { languages } = await cld.detect(text);
-  const language = languages[0]?.name;
-  return language === 'ENGLISH';
-}
-
-
-// translateIfNecessary("hallo").then(console.log);
+// translateIfNecessary("hello baby").then(console.log);
