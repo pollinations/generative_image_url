@@ -22,14 +22,9 @@ import { translateIfNecessary } from './translateIfNecessary.js';
 import { sendToAnalytics } from './sendToAnalytics.js';
 import { isMature } from "./lib/mature.js"
 
-
-
-
+import FormData from 'form-data';
 
 const activeQueues = {};
-
-
-
 
 const requestListener = async function (req, res) {
 
@@ -109,47 +104,68 @@ const callWebUI = async (prompt, extraParams={}) => {
   // if the queue is greater than 10 use only 10 steps 
   // if the queue is zero use 50 steps
   // smooth between 5 and 50 steps based on the queue size
-  const steps = isMature(prompt) ? 10 : Math.min(50, Math.max(15, 50 - concurrentRequests * 10));
+
+  const nsfwDivider = isMature(prompt) ? 2 : 1;
+
+  const steps = Math.floor(Math.max(15, Math.min(50, (50 - (concurrentRequests * 10)) / nsfwDivider)));
   
   console.log("concurent requests", concurrentRequests, "steps", steps, "prompt", prompt, "extraParams", extraParams);
   
-  const animal = prompt.toLowerCase().includes("black") ? "panda:1.3" : "gorilla:1.45";
-  const appendToPrompt = isMature(prompt) ? `. (${animal})` : "";
+  // const animal = prompt.toLowerCase().includes("black") ? "panda:1.3" : "gorilla:1.2";
+  // const appendToPrompt = isMature(prompt) ? `. (${animal})` : "";
   
   concurrentRequests++;
-  
-  const safeParams = makeParamsSafe(extraParams);
+  let buffer = null;
+  try {
+    const safeParams = makeParamsSafe(extraParams);
 
-  
-  sendToFeedListeners({concurrentRequests});
-  
-    const body = {
-        "prompt": prompt + " <lora:noiseoffset:0.6>  <lora:flat_color:0.2>  <lora:add_detail:0.4> "+ appendToPrompt,//+" | key visual| intricate| highly detailed| precise lineart| vibrant| comprehensive cinematic",
-        "steps": steps,
-        "height": 384,
-        "sampler_index": "Euler a",//"DPM++ SDE Karras",
-        "negative_prompt": "easynegative naked woman, huge breasts, cgi, doll, lowres, text, error, cropped, worst quality, low quality, jpeg artifacts, ugly, duplicate, morbid, mutilated, out of frame, extra fingers, mutated hands, poorly drawn hands, poorly drawn face, mutation, deformed, blurry, dehydrated, bad anatomy, bad proportions, extra limbs, cloned face, disfigured, gross proportions, malformed limbs, missing arms, missing legs, extra arms, extra legs, fused fingers, too many fingers, long neck, text, watermark, artist name, copyright name, name, necklace",
-        "cfg_scale": steps < 20 ? 3.0 : 7.0,
-        ...safeParams
+    
+    sendToFeedListeners({concurrentRequests});
+    
+      const body = {
+          "prompt": prompt + " <lora:noiseoffset:0.6>  <lora:flat_color:0.2>  <lora:add_detail:0.4> ",//+" | key visual| intricate| highly detailed| precise lineart| vibrant| comprehensive cinematic",
+          "steps": steps,
+          "height": 384,
+          "sampler_index": "Euler a",//"DPM++ SDE Karras",
+          "negative_prompt": "easynegative naked woman, huge breasts, cgi, doll, lowres, text, error, cropped, worst quality, low quality, jpeg artifacts, ugly, duplicate, morbid, mutilated, out of frame, extra fingers, mutated hands, poorly drawn hands, poorly drawn face, mutation, deformed, blurry, dehydrated, bad anatomy, bad proportions, extra limbs, cloned face, disfigured, gross proportions, malformed limbs, missing arms, missing legs, extra arms, extra legs, fused fingers, too many fingers, long neck, text, watermark, artist name, copyright name, name, necklace",
+          "cfg_scale": steps < 20 ? 3.0 : 7.0,
+          ...safeParams
+        }
+    
+      console.log("calling steps", body.steps, "prompt",body.prompt);
+      const response = await fetch('http://localhost:7860/sdapi/v1/txt2img', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: {
+          "Content-Type": "application/json"
       }
+    });
+
+    const resJson = await response.json();
+    const base64Image = resJson["images"][0];
+    // convert base64 image to buffer
+    buffer = Buffer.from(base64Image, 'base64');
+  } catch (e) {
+    concurrentRequests--;
+    throw e;
+  }
   
-    console.log("calling steps", body.steps, "prompt",body.prompt);
-    const response = await fetch('http://localhost:7860/sdapi/v1/txt2img', {
-    method: 'POST',
-    body: JSON.stringify(body),
-    headers: {
-        "Content-Type": "application/json"
-    }
-  });
-
-  const resJson = await response.json();
-  const base64Image = resJson["images"][0];
-  // convert base64 image to buffer
-  const buffer = Buffer.from(base64Image, 'base64');
-
   concurrentRequests--;
-  sendToFeedListeners({concurrentRequests});
+  // sendToFeedListeners({concurrentRequests});
   return buffer;
+}
+
+// NSFW API
+// # curl command
+// # curl -X POST -F "file=@<image_file_path>" http://localhost:10000/check 
+// # result: {"nsfw": true/false}
+
+const nsfwCheck = async (buffer) => {
+  const form = new FormData();
+  form.append('file', buffer, { filename: 'image.jpg' });
+  const res =  await fetch('http://localhost:10000/check', { method: 'POST', body: form })
+  const json = await res.json();
+  return json;
 }
 
 const maxPixels = 640 * 640;
@@ -164,7 +180,7 @@ const makeParamsSafe = ({width=512, height=384, seed}) => {
 
   // if seed is not an integer set to a random integer
   if (seed && !Number.isInteger(parseInt(seed))) {
-    seed = Math.floor(Math.random() * 1000000);
+    seed = Math.floor(Math.random() * 1000000); 
   }
 
   return {width, height, seed};
@@ -185,12 +201,30 @@ async function createAndReturnImage(promptRaw, extraParams, res, req, ipQueueSiz
 
   const buffer = await callWebUI(prompt, extraParams);
 
-  const bufferWithLegend = await addPollinationsLogoWithImagemagick(buffer);
+  const {concept, nsfw: isMature} = await nsfwCheck(buffer);
+  
+  const isChild = Object.values(concept?.special_scores)?.some(score => score > 0);
+  console.log("isMature", isMature, "concepts", isChild);
+
+  // check for header add_header 'X-Lusti' 'true';
+
+  const logoPath =  (req.headers['x-lusti'] || extraParams["lusti"] || isMature) ? 'logo_lusti_small_black.png' : 'logo.png';
+
+
+  let bufferWithLegend = await addPollinationsLogoWithImagemagick(buffer, logoPath);
+
+  if (isChild && isMature) {
+    // blur
+    bufferWithLegend = await blurImage(bufferWithLegend, 8);
+  }
 
   // get current url from request
   const imageURL = `https://image.pollinations.ai${req.url}`; 
-  sendToFeedListeners({concurrentRequests, imageURL, prompt, originalPrompt: promptAnyLanguage}, {saveAsLastState: true});
   
+  sendToFeedListeners({concurrentRequests, imageURL, prompt, originalPrompt: promptAnyLanguage, nsfw: isMature, isChild}, {saveAsLastState: true});
+
+
+
   return bufferWithLegend;
 }
 
@@ -200,7 +234,7 @@ const createAndReturnImageCached = cacheGeneratedImages(createAndReturnImage);
 // imagemagick command line command to composite the logo on top of the image
 // convert -background none -gravity southeast -geometry +10+10 logo.png -composite image.jpg image.jpg
 
-function addPollinationsLogoWithImagemagick(buffer) {
+function addPollinationsLogoWithImagemagick(buffer, logoPath="logo.png") {
 
   // create temporary file for the image
   const tempImageFile = tempfile({extension: 'png'});
@@ -211,7 +245,7 @@ function addPollinationsLogoWithImagemagick(buffer) {
 
 
   return new Promise((resolve, reject) => {
-    exec(`convert -background none -gravity southeast -geometry +10+10  ${tempImageFile} logo.png -composite ${tempOutputFile}`, (error, stdout, stderr) => {
+    exec(`convert -background none -gravity southeast -geometry +10+10  ${tempImageFile} ${logoPath} -composite ${tempOutputFile}`, (error, stdout, stderr) => {
 
       if (error) {
         console.log(`error: ${error.message}`);
@@ -231,6 +265,35 @@ function addPollinationsLogoWithImagemagick(buffer) {
   });
 }
 
+function blurImage(buffer, size=8) {
+  // create temporary file for the image
+  const tempImageFile = tempfile({extension: 'png'});
+  const tempOutputFile = tempfile({extension: 'jpg'});
+
+  // write buffer to temporary file
+  fs.writeFileSync(tempImageFile, buffer);
+
+  // blur image
+  return new Promise((resolve, reject) => {
+
+    exec(`convert ${tempImageFile} -blur 0x${size} ${tempOutputFile}`, (error, stdout, stderr) => {
+
+      if (error) {
+        console.log(`error: ${error.message}`);
+        reject(error);
+        return;
+      }
+      // get buffer
+      const bufferBlurred = fs.readFileSync(tempOutputFile);
+
+      // delete temporary files
+
+      fs.unlinkSync(tempImageFile);
+      fs.unlinkSync(tempOutputFile);
+
+      resolve(bufferBlurred);
+    });
+  });
 
 
-
+}
