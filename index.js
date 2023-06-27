@@ -35,6 +35,7 @@ const requestListener = async function (req, res) {
   // /feed uses server sent events to update the client with the latest images
   if (pathname.startsWith("/feed")) {
     registerFeedListener(req, res);
+    sendToAnalytics(req, "feedRequested", {});
     return;
   }
 
@@ -53,10 +54,6 @@ const requestListener = async function (req, res) {
     console.log("ip: ", ip, "queue size", activeQueues[ip]?.size);  
   }
 
-  // if ip address is already processing an image wait for it to finish
-  if (!activeQueues[ip]) {
-    activeQueues[ip] = new PQueue({concurrency: 1});
-  }
 
   // const { showImage, finish } = gifCreator(res);
 
@@ -67,7 +64,6 @@ const requestListener = async function (req, res) {
 
   // extract a unique client id from the request
 
-  sendToAnalytics(req, "imageRequested", {promptRaw, concurrentRequests});
 
   if (!promptRaw) {
     res.writeHead(404);
@@ -75,6 +71,14 @@ const requestListener = async function (req, res) {
     return
   }
 
+  sendToAnalytics(req, "imageRequested", {promptRaw, concurrentRequests});
+
+  // if ip address is already processing an image wait for it to finish
+  if (!activeQueues[ip]) {
+    activeQueues[ip] = new PQueue({concurrency: 1});
+  }
+
+  
   // console.log("queue size", imageGenerationQueue.size)
   await (activeQueues[ip].add(async () => {
     try {
@@ -83,7 +87,6 @@ const requestListener = async function (req, res) {
       // console.log(bufferWithLegend)
       res.write(bufferWithLegend);
       res.end();
-      sendToAnalytics(req, "imageGenerated", {promptRaw, concurrentRequests});
     } catch (e) {
       console.error(e);
       res.writeHead(500);
@@ -127,7 +130,7 @@ const callWebUI = async (prompt, extraParams={}) => {
           "steps": steps,
           "height": 384,
           "sampler_index": "Euler a",//"DPM++ SDE Karras",
-          "negative_prompt": "easynegative naked woman, huge breasts, cgi, doll, lowres, text, error, cropped, worst quality, low quality, jpeg artifacts, ugly, duplicate, morbid, mutilated, out of frame, extra fingers, mutated hands, poorly drawn hands, poorly drawn face, mutation, deformed, blurry, dehydrated, bad anatomy, bad proportions, extra limbs, cloned face, disfigured, gross proportions, malformed limbs, missing arms, missing legs, extra arms, extra legs, fused fingers, too many fingers, long neck, text, watermark, artist name, copyright name, name, necklace",
+          "negative_prompt": "easynegative, cgi, doll, lowres, text, error, cropped, worst quality, low quality, jpeg artifacts, ugly, duplicate, morbid, mutilated, out of frame, extra fingers, mutated hands, poorly drawn hands, poorly drawn face, mutation, deformed, blurry, dehydrated, bad anatomy, bad proportions, extra limbs, cloned face, disfigured, gross proportions, malformed limbs, missing arms, missing legs, extra arms, extra legs, fused fingers, too many fingers, long neck, text, watermark, artist name, copyright name, name, necklace",
           "cfg_scale": steps < 20 ? 3.0 : 7.0,
           ...safeParams
         }
@@ -213,10 +216,10 @@ async function createAndReturnImage(promptRaw, extraParams, res, req, ipQueueSiz
 
   let bufferWithLegend = await addPollinationsLogoWithImagemagick(buffer, logoPath);
 
-  if (isChild && isMature) {
-    // blur
-    bufferWithLegend = await blurImage(bufferWithLegend, 8);
-  }
+  // if (isChild && isMature) {
+  //   // blur
+  //   bufferWithLegend = await blurImage(bufferWithLegend, 8);
+  // }
 
   // get current url from request
   const imageURL = `https://image.pollinations.ai${req.url}`; 
@@ -224,6 +227,7 @@ async function createAndReturnImage(promptRaw, extraParams, res, req, ipQueueSiz
   sendToFeedListeners({concurrentRequests, imageURL, prompt, originalPrompt: promptAnyLanguage, nsfw: isMature, isChild}, {saveAsLastState: true});
 
 
+  sendToAnalytics(req, "imageGenerated", {promptRaw, concurrentRequests});
 
   return bufferWithLegend;
 }
