@@ -50,7 +50,9 @@ const requestListener = async function (req, res) {
   // get ip address of the request
   const ip = req.headers["x-real-ip"] || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
 
-  if (activeQueues[ip]?.size > 0) {
+  const activeQueueSize = activeQueues[ip]?.size;
+
+  if (activeQueueSize > 0) {
     console.log("ip: ", ip, "queue size", activeQueues[ip]?.size);  
   }
 
@@ -78,21 +80,22 @@ const requestListener = async function (req, res) {
     activeQueues[ip] = new PQueue({concurrency: 1});
   }
 
+
   
   // console.log("queue size", imageGenerationQueue.size)
-  await (activeQueues[ip].add(async () => {
     try {
-      const bufferWithLegend = await createAndReturnImageCached(promptRaw, extraParams, res, req, activeQueues[ip].size, concurrentRequests);
-    
+     const bufferWithLegend = await createAndReturnImageCached(promptRaw, extraParams, res, req,  activeQueues[ip].size, concurrentRequests, activeQueues[ip]);    
+     // console.log(bufferWithLegend)
+     res.write(bufferWithLegend);
+     res.end();
+
       // console.log(bufferWithLegend)
-      res.write(bufferWithLegend);
-      res.end();
+
     } catch (e) {
       console.error(e);
       res.writeHead(500);
       res.end('500: Internal Server Error');
     }
-  }));
 }
 
 const server = http.createServer(requestListener);
@@ -110,7 +113,7 @@ const callWebUI = async (prompt, extraParams={}) => {
 
   const nsfwDivider = isMature(prompt) ? 2 : 1;
 
-  const steps = Math.floor(Math.max(15, Math.min(50, (50 - (concurrentRequests * 10)) / nsfwDivider)));
+  const steps = Math.floor(Math.max(5, Math.min(50, (50 - (concurrentRequests * 7)) / nsfwDivider)));
   
   console.log("concurent requests", concurrentRequests, "steps", steps, "prompt", prompt, "extraParams", extraParams);
   
@@ -189,47 +192,53 @@ const makeParamsSafe = ({width=512, height=384, seed}) => {
   return {width, height, seed};
 }
 
-async function createAndReturnImage(promptRaw, extraParams, res, req, ipQueueSize, concurrentRequests) {
+async function createAndReturnImage(promptRaw, extraParams, res, req, ipQueueSize, concurrentRequests, enqueue) {
 
   if (ipQueueSize > 0) {
-    console.log("sleeping 3000ms because there was an image in the queue before");
-    await sleep(4000);
-  }
+    console.log("sleeping as long as the queue size");
+    //  (so e.g. if someone drops 30 images in parallel to pollinations we penalize that
+    await sleep(2000 * ipQueueSize);
+  } else
+    console.log("no queue size, no sleep", ipQueueSize);
 
-  res.writeHead(200, { 'Content-Type': 'image/jpeg' });
+  return await enqueue.add(async () => {
+    res.writeHead(200, { 'Content-Type': 'image/jpeg' });
 
-  const promptAnyLanguage = urldecode(promptRaw);
-  
-  const prompt = await translateIfNecessary(promptAnyLanguage);
+    const promptAnyLanguage = urldecode(promptRaw);
+    
+    const prompt = await translateIfNecessary(promptAnyLanguage);
 
-  const buffer = await callWebUI(prompt, extraParams);
+    const buffer = await callWebUI(prompt, extraParams);
 
-  const {concept, nsfw: isMature} = await nsfwCheck(buffer);
-  
-  const isChild = Object.values(concept?.special_scores)?.some(score => score > 0);
-  console.log("isMature", isMature, "concepts", isChild);
+    const {concept, nsfw: isMature} = await nsfwCheck(buffer);
+    
+    const isChild = Object.values(concept?.special_scores)?.some(score => score > 0);
+    console.log("isMature", isMature, "concepts", isChild);
 
-  // check for header add_header 'X-Lusti' 'true';
+    // check for header add_header 'X-Lusti' 'true';
 
-  const logoPath =  (req.headers['x-lusti'] || extraParams["lusti"] || isMature) ? 'logo_lusti_small_black.png' : 'logo.png';
-
-
-  let bufferWithLegend = await addPollinationsLogoWithImagemagick(buffer, logoPath);
-
-  // if (isChild && isMature) {
-  //   // blur
-  //   bufferWithLegend = await blurImage(bufferWithLegend, 8);
-  // }
-
-  // get current url from request
-  const imageURL = `https://image.pollinations.ai${req.url}`; 
-  
-  sendToFeedListeners({concurrentRequests, imageURL, prompt, originalPrompt: promptAnyLanguage, nsfw: isMature, isChild}, {saveAsLastState: true});
+    const logoPath =  (req.headers['x-lusti'] || extraParams["lusti"] || isMature) ? 'logo_lusti_small_black.png' : 'logo.png';
 
 
-  sendToAnalytics(req, "imageGenerated", {promptRaw, concurrentRequests});
+    let bufferWithLegend = await addPollinationsLogoWithImagemagick(buffer, logoPath);
 
-  return bufferWithLegend;
+    // if (isChild && isMature) {
+    //   // blur
+    //   bufferWithLegend = await blurImage(bufferWithLegend, 8);
+    // }
+
+    // get current url from request
+    const imageURL = `https://image.pollinations.ai${req.url}`; 
+    
+    sendToFeedListeners({concurrentRequests, imageURL, prompt, originalPrompt: promptAnyLanguage, nsfw: isMature, isChild}, {saveAsLastState: true});
+
+
+    sendToAnalytics(req, "imageGenerated", {promptRaw, concurrentRequests});
+    
+    // res.write(bufferWithLegend);
+    // res.end();
+    return bufferWithLegend;
+  });
 }
 
 const createAndReturnImageCached = cacheGeneratedImages(createAndReturnImage);
